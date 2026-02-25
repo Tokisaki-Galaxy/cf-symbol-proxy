@@ -1,10 +1,10 @@
 // Windbg Symbol Proxy - Cloudflare Workers
 // Proxy for Microsoft Symbol Server with caching
-const UPSTREAM_URL = 'https://msdl.microsoft.com/download/symbols';
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    const UPSTREAM_URL = env.SYMBOL_SERVER || 'https://msdl.microsoft.com/download/symbols';
 
     // 健康检查
     if (url.pathname === '/' || url.pathname === '/health') {
