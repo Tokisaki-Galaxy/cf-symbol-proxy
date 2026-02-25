@@ -1,148 +1,69 @@
 // Windbg Symbol Proxy - Cloudflare Workers
 // Proxy for Microsoft Symbol Server with caching
+const UPSTREAM_URL = 'https://msdl.microsoft.com/download/symbols';
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    
-    // Only handle GET requests
-    if (request.method !== 'GET') {
+
+    // 健康检查
+    if (url.pathname === '/' || url.pathname === '/health') {
+      return new Response('Symbol Proxy is running...', { status: 200 });
+    }
+
+    // 只处理 GET 和 HEAD
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
       return new Response('Method not allowed', { status: 405 });
     }
 
-    // Extract symbol file path from URL
-    // Example: /ntdll.pdb/1234567890ABCDEF1/ntdll.pdb
-    const path = url.pathname;
-    
-    if (path === '/' || path === '/health') {
-      return handleHealthCheck();
+    const cache = caches.default;
+    // 检查缓存（注意：必须绑定自定义域名！）
+    let response = await cache.match(request);
+
+    if (response) {
+      console.log(`Cache Hit: ${url.pathname}`);
+      return response;
     }
 
-    // Check cache first
-    const cacheKey = `symbol:${path}`;
-    const cached = await env.SYMBOL_CACHE.get(cacheKey, { type: 'stream' });
-    
-    if (cached) {
-      console.log(`Cache hit for: ${path}`);
-      return new Response(cached, {
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          'X-Cache': 'HIT',
-          'Cache-Control': `public, max-age=${env.CACHE_TTL}`,
-          'Access-Control-Allow-Origin': '*',
-        }
-      });
-    }
+    console.log(`Cache Miss: ${url.pathname}`);
 
-    console.log(`Cache miss for: ${path}, fetching from upstream`);
-    
-    // Fetch from Microsoft Symbol Server
-    const upstreamUrl = `${env.SYMBOL_SERVER}${path}`;
-    
-    try {
-      const response = await fetch(upstreamUrl, {
-        headers: {
-          'User-Agent': 'Windbg-Symbol-Proxy/1.0',
-        },
-        cf: {
-          cacheTtl: env.CACHE_TTL,
-          cacheEverything: true,
-        }
-      });
-
-      if (!response.ok) {
-        console.log(`Upstream error: ${response.status} for ${upstreamUrl}`);
-        return new Response('Symbol not found', { 
-          status: response.status,
-          headers: { 'X-Upstream-Status': response.status.toString() }
-        });
-      }
-
-      // Get response body as stream
-      const responseBody = response.body;
-      
-      // Clone the response to cache it
-      const [stream1, stream2] = responseBody.tee();
-      
-      // Cache the response in background
-      ctx.waitUntil(cacheResponse(cacheKey, stream1, env));
-      
-      // Return the response with caching headers
-      const headers = new Headers(response.headers);
-      headers.set('X-Cache', 'MISS');
-      headers.set('Cache-Control', `public, max-age=${env.CACHE_TTL}`);
-      headers.set('Access-Control-Allow-Origin', '*');
-      
-      // Remove content-encoding if present (Cloudflare will re-encode)
-      headers.delete('content-encoding');
-      headers.delete('Content-Encoding');
-      
-      return new Response(stream2, {
-        status: response.status,
-        headers: headers
-      });
-      
-    } catch (error) {
-      console.error(`Error fetching symbol: ${error.message}`);
-      return new Response('Internal server error', { status: 500 });
-    }
-  }
-};
-
-async function cacheResponse(key, stream, env) {
-  try {
-    // Read the stream into an array buffer
-    const chunks = [];
-    const reader = stream.getReader();
-    
-    let totalSize = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      
-      chunks.push(value);
-      totalSize += value.length;
-      
-      // Check file size limit
-      if (totalSize > parseInt(env.MAX_FILE_SIZE)) {
-        console.log(`File too large to cache: ${totalSize} bytes`);
-        return;
-      }
-    }
-    
-    // Combine chunks
-    const combined = new Uint8Array(totalSize);
-    let offset = 0;
-    for (const chunk of chunks) {
-      combined.set(chunk, offset);
-      offset += chunk.length;
-    }
-    
-    // Store in KV with TTL
-    await env.SYMBOL_CACHE.put(key, combined, {
-      expirationTtl: parseInt(env.CACHE_TTL)
+    // 构造请求回源
+    const targetUrl = UPSTREAM_URL + url.pathname;
+    const newRequest = new Request(targetUrl, {
+      method: request.method,
+      headers: {
+        // 伪装成标准的微软符号客户端
+        'User-Agent': 'Microsoft-Symbol-Server/10.0.0.0',
+      },
     });
-    
-    console.log(`Cached: ${key}, size: ${totalSize} bytes`);
-    
-  } catch (error) {
-    console.error(`Failed to cache response: ${error.message}`);
-  }
-}
 
-function handleHealthCheck() {
-  return new Response(JSON.stringify({
-    status: 'ok',
-    service: 'windbg-symbol-proxy',
-    timestamp: new Date().toISOString(),
-    endpoints: {
-      symbol_proxy: 'GET /{pdb_name}/{guid}/{filename}',
-      health: 'GET /health'
+    try {
+      response = await fetch(newRequest);
+
+      // 分状态码处理缓存逻辑
+      if (response.status === 200) {
+        // 成功下载：缓存 1 年 (immutable 表示文件永不改变)
+        const headers = new Headers(response.headers);
+        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+        headers.set('X-Proxy-Cache', 'MISS');
+
+        response = new Response(response.body, { ...response, headers });
+        
+        // 使用 ctx.waitUntil 确保缓存写入不阻塞下载返回
+        ctx.waitUntil(cache.put(request, response.clone()));
+      } 
+      else if (response.status === 404) {
+        // 404：缓存 1 小时，防止重试
+        const headers = new Headers(response.headers);
+        headers.set('Cache-Control', 'public, max-age=3600');
+        response = new Response(response.body, { ...response, headers });
+        ctx.waitUntil(cache.put(request, response.clone()));
+      }
+
+      return response;
+
+    } catch (err) {
+      return new Response(`Fetch Error: ${err.message}`, { status: 502 });
     }
-  }, null, 2), {
-    headers: {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-cache'
-    }
-  });
-}
+  },
+};
