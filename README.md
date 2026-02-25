@@ -1,152 +1,94 @@
 # Windbg Symbol Proxy
 
-A Cloudflare Workers proxy for accelerating Windbg symbol downloads with caching capabilities.
+<div align="center">
+
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
+[![License](https://img.shields.io/github/license/Tokisaki-Galaxy/cf-symbol-proxy?style=for-the-badge&color=0078d4)](https://github.com/Tokisaki-Galaxy/cf-symbol-proxy/blob/main/LICENSE)
+[![WinDbg Support](https://img.shields.io/badge/Debug-WinDbg-blue?style=for-the-badge&logo=windows&logoColor=white)](https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/debugger-download-tools)
+
+</div>
+
+---
+
+A high-performance Cloudflare Workers proxy for accelerating WinDbg symbol downloads. Unlike other implementations, this project uses the **Cache API** to bypass KV storage limits and specifically fixes the "0-byte HEAD request" pollution issue common with Microsoft's symbol server.
 
 ## Features
 
-- 🚀 **High-speed caching** - Caches symbol files from Microsoft Symbol Server
-- 🌍 **Global CDN** - Leverages Cloudflare's global network
-- ⚡ **Low latency** - Reduced download times for debugging symbols
-- 🔄 **Automatic cache management** - 24-hour TTL with automatic refresh
-- 📦 **Supports all symbol types** - PDB, DLL, EXE, and other debug files
+- **Cache API Integration**: No file size limits (supports large PDBs > 100MB) and zero memory overhead.
+- **HEAD Request Fix**: Automatically upgrades `HEAD` checks to `GET` requests to prevent 0-byte cache pollution from Microsoft/Azure CDN.
+- **Long-term Caching**: Sets `immutable` cache headers (1-year TTL) for symbols, as they never change once released.
+- **Smart 404 Handling**: Caches "Not Found" responses for 1 hour to reduce redundant upstream pressure and speed up WinDbg's fallback logic.
+- **GitHub Actions Ready**: Continuous deployment out of the box.
 
-## Usage
+## 🛠 Usage
 
-### For Windbg Configuration
+### 1. WinDbg Configuration
 
-In Windbg, set your symbol path to:
-
-```
-SRV*C:\Symbols*https://symbols.tokisaki.top
-```
-
-Or for the workers.dev domain:
-
-```
-SRV*C:\Symbols*https://windbg-symbol-proxy.<your-subdomain>.workers.dev
+Set your symbol path in WinDbg:
+```text
+.sympath srv*C:\Symbols*https://symbols.tokisaki.top
+.reload
 ```
 
-### Direct URL Access
+### 2. Environment Variable (Recommended)
 
-You can also access symbols directly via:
+Add a system environment variable `_NT_SYMBOL_PATH` to make it permanent:
+- **Variable Name**: `_NT_SYMBOL_PATH`
+- **Variable Value**: `srv*C:\Symbols*https://symbols.tokisaki.top`
 
-```
-https://symbols.tokisaki.top/ntdll.pdb/1234567890ABCDEF1/ntdll.pdb
-```
+> [!IMPORTANT]
+> **Custom Domain Required**: Cloudflare's Cache API **only** works on custom domains. It will NOT cache anything if you use the default `*.workers.dev` subdomain.
 
 ## Deployment
 
 ### Prerequisites
-
-1. [Node.js](https://nodejs.org/) (v16+)
-2. [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/): `npm install -g wrangler`
-3. Cloudflare account with Workers enabled
+- A Cloudflare account with a **Custom Domain** added.
+- GitHub API Token for deployment (see GitHub Actions setup).
 
 ### Setup
-
-1. Clone this repository:
+1. **Fork/Clone**:
    ```bash
-   git clone https://github.com/<your-username>/windbg-symbol-proxy.git
-   cd windbg-symbol-proxy
+   git clone https://github.com/Tokisaki-Galaxy/cf-symbol-proxy.git
    ```
-
-2. Install dependencies:
-   ```bash
-   npm install
+2. **Configure**: Edit `wrangler.toml` to match your domain:
+   ```toml
+   [triggers]
+   routes = [
+     { pattern = "symbols.yourdomain.com/*", custom_domain = true }
+   ]
    ```
+3. **Deploy**:
+   - **Local**: `npx wrangler deploy`
+   - **CI/CD**: Push to `main` branch (requires `CLOUDFLARE_API_TOKEN` in GitHub Secrets).
 
-3. Login to Cloudflare:
-   ```bash
-   npx wrangler login
-   ```
+## 📝 Configuration
 
-4. Configure your domain (optional):
-   - Update `wrangler.toml` with your custom domain
-   - Or use the default workers.dev domain
+Variables in `wrangler.toml`:
 
-5. Deploy:
-   ```bash
-   npm run deploy
-   ```
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `SYMBOL_SERVER` | Upstream symbol source | `https://msdl.microsoft.com/download/symbols` |
 
-## Configuration
+## 🔍 How it Works (The "0-byte" Fix)
 
-### Environment Variables
+Microsoft's Symbol Server often returns a `200 OK` with `Content-Length: 0` for `HEAD` requests, even for non-existent files. Standard proxies often cache this empty response, breaking subsequent downloads.
 
-Set in `wrangler.toml`:
+This proxy:
+1. Intercepts all requests and checks the Cloudflare **Cache API**.
+2. If a miss occurs, it **always uses `GET`** to fetch from the upstream.
+3. It validates the response before storing it.
+4. It serves the client's `HEAD` or `GET` request from the now-validated cache.
 
-- `SYMBOL_SERVER`: Upstream symbol server (default: Microsoft)
-- `CACHE_TTL`: Cache time-to-live in seconds (default: 86400 = 24h)
-- `MAX_FILE_SIZE`: Maximum file size to cache in bytes (default: 100MB)
-
-### Cache Management
-
-The proxy uses Cloudflare KV for caching. Cache keys follow the pattern:
-```
-symbol:{path}
-```
-
-Example:
-```
-symbol:/ntdll.pdb/1234567890ABCDEF1/ntdll.pdb
-```
-
-## Architecture
-
-```mermaid
-graph LR
-    A[Windbg Client] --> B[Cloudflare Workers]
-    B --> C{Check Cache}
-    C -->|Hit| D[Return Cached Symbol]
-    C -->|Miss| E[Fetch from Microsoft]
-    E --> F[Cache Symbol]
-    F --> G[Return to Client]
-```
-
-## Performance Benefits
-
-- **First download**: Slightly slower (adds proxy overhead)
-- **Subsequent downloads**: Much faster (served from cache)
-- **Geographic distribution**: Symbols cached globally
-
-## Testing
+## 🧪 Testing
 
 ### Health Check
-
-```
-GET https://symbols.tokisaki.top/health
-```
-
-### Test Symbol Download
-
 ```bash
-curl -I https://symbols.tokisaki.top/ntdll.pdb/1234567890ABCDEF1/ntdll.pdb
+curl -I https://symbols.tokisaki.top/health
 ```
 
-## Development
-
+### Test Symbol Download (NTDLL)
 ```bash
-# Local development
-npm run dev
-
-# Deploy to production
-npm run deploy
-
-# Check logs
-npx wrangler tail
+# First time: MISS (Fetch from Microsoft)
+# Second time: HIT (Served from Cloudflare Cache)
+curl -svo /dev/null "https://symbols.tokisaki.top/ntdll.pdb/2CF5F86ACB68735923D72913BBD9B0E31/ntdll.pdb" 2>&1 | grep -iE "< HTTP|< cf-cache|< content-length"
 ```
-
-## License
-
-MIT License - see LICENSE file for details.
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
-## Support
-
-For issues and questions, please open an issue on GitHub.
