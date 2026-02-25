@@ -1,0 +1,23 @@
+name = "windbg-symbol-proxy"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[triggers]
+routes = [
+  { pattern = "symbols.tokisaki.top/*", custom_domain = true },
+  { pattern = "windbg-symbol-proxy.*.workers.dev/*", zone_id = null }
+]
+
+[vars]
+SYMBOL_SERVER = "https://msdl.microsoft.com/download/symbols"
+CACHE_TTL = "86400"  # 24 hours in seconds
+MAX_FILE_SIZE = "104857600"  # 100MB max file size
+
+[[kv_namespaces]]
+binding = "SYMBOL_CACHE"
+id = "symbol-cache-namespace"
+
+[r2_buckets]
+binding = "SYMBOL_STORAGE"
+bucket_name = "windbg-symbol-storage"
+preview_bucket_name = "windbg-symbol-storage-preview"
