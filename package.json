@@ -1,5 +1,5 @@
 {
-  "name": "windbg-symbol-proxy",
+  "name": "cf-symbol-proxy",
   "version": "1.0.0",
   "description": "Cloudflare Workers proxy for accelerating Windbg symbol downloads",
   "main": "src/index.js",
