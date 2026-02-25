@@ -2,14 +2,7 @@
 
 ## Common Symbol URLs
 
-### PDB Files
-- `ntdll.pdb`: `/ntdll.pdb/1234567890ABCDEF1/ntdll.pdb`
-- `kernel32.pdb`: `/kernel32.pdb/1234567890ABCDEF2/kernel32.pdb`
-- `user32.pdb`: `/user32.pdb/1234567890ABCDEF3/user32.pdb`
-
-### DLL Files
-- `ntdll.dll`: `/ntdll.dll/1234567890ABCDEF4/ntdll.dll`
-- `kernel32.dll`: `/kernel32.dll/1234567890ABCDEF5/kernel32.dll`
+`https://msdl.microsoft.com/download/symbols/ntdll.pdb/2CF5F86ACB68735923D72913BBD9B0E31/ntdll.pdb`
 
 ## Test Commands
 
@@ -21,15 +14,15 @@ curl https://symbols.tokisaki.top/health
 ### Test Symbol Download
 ```bash
 # Test with curl
-curl -I https://symbols.tokisaki.top/ntdll.pdb/1234567890ABCDEF1/ntdll.pdb
+curl -svo /dev/null "https://symbols.tokisaki.top/ntdll.pdb/2CF5F86ACB68735923D72913BBD9B0E31/ntdll.pdb" 2>&1 | grep -iE "< HTTP|< cf-cache|< content-length|< x-proxy-debug"
 
 # Download test
-curl -o test.pdb https://symbols.tokisaki.top/ntdll.pdb/1234567890ABCDEF1/ntdll.pdb
+curl -o test.pdb https://symbols.tokisaki.top/ntdll.pdb/2CF5F86ACB68735923D72913BBD9B0E31/ntdll.pdb
 ```
 
 ### Windbg Test Commands
 ```
-.sympath+ SRV*C:\Symbols*https://symbols.tokisaki.top
+.sympath+ SRV*D:\Symbols*https://symbols.tokisaki.top
 .reload
 !sym noisy
 ```
