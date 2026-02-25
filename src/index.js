@@ -8,7 +8,7 @@ export default {
 
     // 健康检查
     if (url.pathname === '/' || url.pathname === '/health') {
-      return new Response('Symbol Proxy is running...', { status: 200 });
+      return new Response(`Symbol Proxy is running. Upstream: ${UPSTREAM_URL}`, { status: 200 });
     }
 
     // 只处理 GET 和 HEAD
@@ -28,36 +28,30 @@ export default {
     console.log(`Cache Miss: ${url.pathname}`);
 
     // 构造请求回源
-    const targetUrl = UPSTREAM_URL + url.pathname;
+    const targetUrl = UPSTREAM_URL.replace(/\/$/, '') + url.pathname;
     const newRequest = new Request(targetUrl, {
       method: request.method,
-      headers: {
-        // 伪装成标准的微软符号客户端
-        'User-Agent': 'Microsoft-Symbol-Server/10.0.0.0',
-      },
+      headers: { 'User-Agent': 'Microsoft-Symbol-Server/10.0.0.0' },
+      redirect: 'follow' // 确保跟随微软的 302 重定向
     });
 
     try {
       response = await fetch(newRequest);
 
       // 分状态码处理缓存逻辑
-      if (response.status === 200) {
-        // 成功下载：缓存 1 年 (immutable 表示文件永不改变)
-        const headers = new Headers(response.headers);
-        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-        headers.set('X-Proxy-Cache', 'MISS');
-
-        response = new Response(response.body, { ...response, headers });
-        
-        // 使用 ctx.waitUntil 确保缓存写入不阻塞下载返回
-        ctx.waitUntil(cache.put(request, response.clone()));
-      } 
-      else if (response.status === 404) {
-        // 404：缓存 1 小时，防止重试
-        const headers = new Headers(response.headers);
-        headers.set('Cache-Control', 'public, max-age=3600');
-        response = new Response(response.body, { ...response, headers });
-        ctx.waitUntil(cache.put(request, response.clone()));
+      if (request.method === 'GET') {
+        if (response.status === 200) {
+          const headers = new Headers(response.headers);
+          headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+          response = new Response(response.body, { ...response, headers });
+          ctx.waitUntil(cache.put(request, response.clone()));
+        } 
+        else if (response.status === 404) {
+          const headers = new Headers(response.headers);
+          headers.set('Cache-Control', 'public, max-age=3600');
+          response = new Response(response.body, { ...response, headers });
+          ctx.waitUntil(cache.put(request, response.clone()));
+        }
       }
 
       return response;
